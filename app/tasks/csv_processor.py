@@ -19,6 +19,10 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Chunk size for processing
+# Ideal: 5,000-10,000 rows per chunk
+# - Smaller chunks: More frequent progress updates, lower memory usage, but more DB transactions
+# - Larger chunks: Fewer DB transactions, faster bulk operations, but less frequent updates
+# For 500k rows: 10,000 is optimal (50 chunks total, good balance)
 CHUNK_SIZE = 10000
 
 
@@ -45,7 +49,9 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
             raise ValueError(f"UploadJob with id {upload_job_id} not found")
         
         upload_job.status = UploadStatus.PROCESSING
+        upload_job.progress = 0.0
         db.commit()
+        db.refresh(upload_job)  # Refresh to ensure changes are visible
         
         # Check if file exists
         if not os.path.exists(file_path):
@@ -60,8 +66,22 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
             reader = csv.DictReader(f)
             total_rows = sum(1 for _ in reader)
         
+        # Update total_rows immediately so SSE can see it
         upload_job.total_rows = total_rows
+        upload_job.progress = 5.0  # Set initial progress
         db.commit()
+        db.refresh(upload_job)  # Refresh to ensure changes are visible
+        
+        # Update Celery task state with total_rows info
+        self.update_state(
+            state='PROCESSING', 
+            meta={
+                'progress': 5, 
+                'message': f'Found {total_rows} rows to process', 
+                'total_rows': total_rows,
+                'processed_rows': 0
+            }
+        )
         
         # Validate required columns
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -88,6 +108,19 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
         
         processed_rows = 0
         chunk = []
+        rows_added_to_chunk = 0
+        last_progress_update = 0
+        # Progress update interval: Dynamic based on total_rows
+        # For small files (<1000 rows): Update every 10 rows
+        # For medium files (1k-10k rows): Update every 50 rows
+        # For large files (>10k rows): Update every 100-200 rows
+        # This ensures smooth progress without excessive DB writes
+        if total_rows < 1000:
+            PROGRESS_UPDATE_INTERVAL = 10
+        elif total_rows < 10000:
+            PROGRESS_UPDATE_INTERVAL = 50
+        else:
+            PROGRESS_UPDATE_INTERVAL = 100  # For 500k rows, update every 100 rows (5000 updates total)
         
         with open(file_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
@@ -117,39 +150,85 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
                 }
                 
                 chunk.append(product_data)
-                processed_rows += 1
+                rows_added_to_chunk += 1
                 
                 # Process chunk when it reaches CHUNK_SIZE
                 if len(chunk) >= CHUNK_SIZE:
                     _bulk_upsert_products(db, chunk)
-                    chunk = []
+                    chunk = []  # Clear chunk after processing
                     
                     # Update progress
-                    progress = min(90, 10 + (processed_rows / total_rows * 80))
+                    progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
                     self.update_state(
                         state='PROCESSING',
                         meta={
                             'progress': progress,
-                            'message': f'Processed {processed_rows}/{total_rows} rows',
-                            'processed_rows': processed_rows,
+                            'message': f'Processed {rows_added_to_chunk}/{total_rows} rows',
+                            'processed_rows': rows_added_to_chunk,
                             'total_rows': total_rows
                         }
                     )
                     
                     upload_job.progress = progress
-                    upload_job.processed_rows = processed_rows
+                    upload_job.processed_rows = rows_added_to_chunk
                     db.commit()
+                    db.refresh(upload_job)  # Refresh to ensure changes are visible
+                    last_progress_update = rows_added_to_chunk
+                
+                # Update progress periodically (every PROGRESS_UPDATE_INTERVAL rows)
+                elif rows_added_to_chunk - last_progress_update >= PROGRESS_UPDATE_INTERVAL:
+                    progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
+                    self.update_state(
+                        state='PROCESSING',
+                        meta={
+                            'progress': progress,
+                            'message': f'Processed {rows_added_to_chunk}/{total_rows} rows',
+                            'processed_rows': rows_added_to_chunk,
+                            'total_rows': total_rows
+                        }
+                    )
+                    
+                    upload_job.progress = progress
+                    upload_job.processed_rows = rows_added_to_chunk
+                    db.commit()
+                    db.refresh(upload_job)  # Refresh to ensure changes are visible
+                    last_progress_update = rows_added_to_chunk
             
             # Process remaining chunk
             if chunk:
                 _bulk_upsert_products(db, chunk)
-                processed_rows += len(chunk)
+                # Update progress after processing final chunk
+                # If all rows are processed, set progress to 95% (before final completion)
+                if rows_added_to_chunk >= total_rows:
+                    progress = 95.0  # Almost done, finalizing
+                else:
+                    progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
+                
+                self.update_state(
+                    state='PROCESSING',
+                    meta={
+                        'progress': progress,
+                        'message': f'Processed {rows_added_to_chunk}/{total_rows} rows',
+                        'processed_rows': rows_added_to_chunk,
+                        'total_rows': total_rows
+                    }
+                )
+                
+                upload_job.progress = progress
+                upload_job.processed_rows = rows_added_to_chunk
+                db.commit()
+                db.refresh(upload_job)  # Refresh to ensure changes are visible
+        
+        # Use rows_added_to_chunk as the source of truth for processed_rows
+        # This ensures we count exactly the number of rows we processed
+        processed_rows = rows_added_to_chunk
         
         # Final update
         upload_job.status = UploadStatus.COMPLETED
         upload_job.progress = 100.0
         upload_job.processed_rows = processed_rows
         db.commit()
+        db.refresh(upload_job)  # Refresh to ensure changes are visible
         
         self.update_state(
             state='SUCCESS',
