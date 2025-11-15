@@ -11,17 +11,3 @@ COPY . .
 
 # Run Celery worker
 CMD ["celery", "-A", "celery_app", "worker", "--loglevel=info"]
-
-
-gcloud run deploy fulfil-rk-worker \
-  --source . \
-  --platform managed \
-  --region asia-south1 \
-  --no-allow-unauthenticated \
-  --timeout 3600 \
-  --memory 2Gi \
-  --cpu 2 \
-  --min-instances 1 \
-  --max-instances 1 \
-  --set-env-vars DATABASE_URL="postgresql://neondb_owner:npg_XNVc5Qbdl0WR@ep-steep-fog-a1oc0n35-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require",REDIS_URL="rediss://default:AXzDAAIncDI2YTY1YmYyNWY2NTI0ZTk3YWQxNjU5ZmRkMDVjMDcxM3AyMzE5Mzk@loyal-wolf-31939.upstash.io:6379?ssl_cert_reqs=CERT_NONE",CELERY_BROKER_URL="rediss://default:AXzDAAIncDI2YTY1YmYyNWY2NTI0ZTk3YWQxNjU5ZmRkMDVjMDcxM3AyMzE5Mzk@loyal-wolf-31939.upstash.io:6379/0?ssl_cert_reqs=CERT_NONE",CELERY_RESULT_BACKEND="rediss://default:AXzDAAIncDI2YTY1YmYyNWY2NTI0ZTk3YWQxNjU5ZmRkMDVjMDcxM3AyMzE5Mzk@loyal-wolf-31939.upstash.io:6379/0?ssl_cert_reqs=CERT_NONE",SECRET_KEY="RK-FULFIL-SECRET-KEY",DEBUG="False",ENVIRONMENT="production" \
-  --execution-environment gen2
