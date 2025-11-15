@@ -850,6 +850,52 @@ h2 {
     border-bottom-right-radius: 16px;
 }
 
+/* Webhook specific styles */
+.url-cell {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.event-types {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.event-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    background: #e0e7ff;
+    color: #4338ca;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.025em;
+}
+
+.checkbox-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    background: #f9fafb;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+}
+
+.checkbox-group .checkbox-label {
+    margin: 0;
+    padding: 8px;
+    background: white;
+    border-radius: 6px;
+}
+
+.checkbox-group .checkbox-label:hover {
+    background: #f3f4f6;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .products-header {
@@ -877,6 +923,10 @@ h2 {
     .products-table th,
     .products-table td {
         padding: 10px;
+    }
+    
+    .url-cell {
+        max-width: 150px;
     }
 }
 

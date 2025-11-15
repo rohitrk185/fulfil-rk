@@ -391,6 +391,10 @@ document.querySelectorAll('.nav-link').forEach(link => {
             if (target === 'products') {
                 loadProducts();
             }
+            // Load webhooks when webhooks section is shown
+            if (target === 'webhooks') {
+                loadWebhooks();
+            }
         }
     });
 });
@@ -742,4 +746,208 @@ function showNotification(message, type = 'info') {
     // Simple notification - you can enhance this with a toast library
     alert(message);
 }
+
+// ==================== WEBHOOK MANAGEMENT ====================
+
+// Webhook state
+let editingWebhookId = null;
+
+// DOM Elements for Webhooks
+const webhooksTbody = document.getElementById('webhooks-tbody');
+const createWebhookBtn = document.getElementById('create-webhook-btn');
+const webhookModal = document.getElementById('webhook-modal');
+const webhookForm = document.getElementById('webhook-form');
+const webhookModalTitle = document.getElementById('webhook-modal-title');
+const closeWebhookModalBtn = document.getElementById('close-webhook-modal-btn');
+const cancelWebhookBtn = document.getElementById('cancel-webhook-btn');
+
+// Load webhooks from API
+async function loadWebhooks() {
+    try {
+        webhooksTbody.innerHTML = '<tr><td colspan="7" class="loading">Loading webhooks...</td></tr>';
+        
+        const response = await fetch(`${API_BASE}/webhooks`);
+        if (!response.ok) throw new Error('Failed to fetch webhooks');
+        
+        const webhooks = await response.json();
+        renderWebhooks(webhooks);
+        
+    } catch (error) {
+        console.error('Error loading webhooks:', error);
+        webhooksTbody.innerHTML = `<tr><td colspan="7" class="error">Error loading webhooks: ${error.message}</td></tr>`;
+    }
+}
+
+// Render webhooks table
+function renderWebhooks(webhooks) {
+    if (webhooks.length === 0) {
+        webhooksTbody.innerHTML = '<tr><td colspan="7" class="empty">No webhooks found. Create one to get started!</td></tr>';
+        return;
+    }
+    
+    webhooksTbody.innerHTML = webhooks.map(webhook => `
+        <tr>
+            <td>${webhook.id}</td>
+            <td class="url-cell">${escapeHtml(webhook.url)}</td>
+            <td>
+                <div class="event-types">
+                    ${webhook.event_types.map(event => `<span class="event-badge">${event}</span>`).join('')}
+                </div>
+            </td>
+            <td>
+                <span class="badge ${webhook.enabled ? 'badge-success' : 'badge-inactive'}">
+                    ${webhook.enabled ? 'Enabled' : 'Disabled'}
+                </span>
+            </td>
+            <td>${webhook.timeout}s</td>
+            <td>${webhook.retry_count}</td>
+            <td class="actions">
+                <button class="btn-icon btn-edit" onclick="editWebhook(${webhook.id})" title="Edit">✏️</button>
+                <button class="btn-icon btn-delete" onclick="deleteWebhook(${webhook.id})" title="Delete">🗑️</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+// Modal handlers
+createWebhookBtn.addEventListener('click', () => {
+    editingWebhookId = null;
+    webhookModalTitle.textContent = 'Create Webhook';
+    webhookForm.reset();
+    document.getElementById('webhook-enabled').checked = true;
+    document.getElementById('webhook-timeout').value = 30;
+    document.getElementById('webhook-retry-count').value = 3;
+    clearFormErrors();
+    webhookModal.classList.remove('hidden');
+});
+
+closeWebhookModalBtn.addEventListener('click', closeWebhookModal);
+cancelWebhookBtn.addEventListener('click', closeWebhookModal);
+
+function closeWebhookModal() {
+    webhookModal.classList.add('hidden');
+    editingWebhookId = null;
+    webhookForm.reset();
+    clearFormErrors();
+}
+
+// Form submission
+webhookForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    // Get event types from checkboxes
+    const eventTypes = Array.from(document.querySelectorAll('input[name="event_types"]:checked'))
+        .map(cb => cb.value);
+    
+    if (eventTypes.length === 0) {
+        showFormError('event-types-error', 'At least one event type must be selected');
+        return;
+    }
+    
+    const formData = {
+        url: document.getElementById('webhook-url').value.trim(),
+        event_types: eventTypes,
+        enabled: document.getElementById('webhook-enabled').checked,
+        timeout: parseInt(document.getElementById('webhook-timeout').value),
+        retry_count: parseInt(document.getElementById('webhook-retry-count').value)
+    };
+    
+    const secret = document.getElementById('webhook-secret').value.trim();
+    if (secret) {
+        formData.secret = secret;
+    }
+    
+    clearFormErrors();
+    
+    try {
+        const url = editingWebhookId 
+            ? `${API_BASE}/webhooks/${editingWebhookId}`
+            : `${API_BASE}/webhooks`;
+        
+        const method = editingWebhookId ? 'PUT' : 'POST';
+        
+        const response = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(formData)
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            if (response.status === 400 || response.status === 422) {
+                const errorMsg = Array.isArray(data.detail) 
+                    ? data.detail.map(e => e.msg).join(', ')
+                    : data.detail;
+                showFormError('url-error', errorMsg);
+            } else {
+                throw new Error(data.detail || 'Failed to save webhook');
+            }
+            return;
+        }
+        
+        closeWebhookModal();
+        loadWebhooks();
+        showNotification('Webhook saved successfully!', 'success');
+        
+    } catch (error) {
+        console.error('Error saving webhook:', error);
+        showFormError('url-error', error.message);
+    }
+});
+
+// Edit webhook
+async function editWebhook(id) {
+    try {
+        const response = await fetch(`${API_BASE}/webhooks/${id}`);
+        if (!response.ok) throw new Error('Failed to fetch webhook');
+        
+        const webhook = await response.json();
+        
+        editingWebhookId = id;
+        webhookModalTitle.textContent = 'Edit Webhook';
+        document.getElementById('webhook-url').value = webhook.url;
+        document.getElementById('webhook-enabled').checked = webhook.enabled;
+        document.getElementById('webhook-secret').value = webhook.secret || '';
+        document.getElementById('webhook-timeout').value = webhook.timeout;
+        document.getElementById('webhook-retry-count').value = webhook.retry_count;
+        
+        // Set event type checkboxes
+        document.querySelectorAll('input[name="event_types"]').forEach(cb => {
+            cb.checked = webhook.event_types.includes(cb.value);
+        });
+        
+        clearFormErrors();
+        webhookModal.classList.remove('hidden');
+        
+    } catch (error) {
+        console.error('Error loading webhook:', error);
+        showNotification('Failed to load webhook', 'error');
+    }
+}
+
+// Delete webhook
+function deleteWebhook(id) {
+    showConfirmModal(
+        'Delete Webhook',
+        'Are you sure you want to delete this webhook? This action cannot be undone.',
+        async () => {
+            try {
+                const response = await fetch(`${API_BASE}/webhooks/${id}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) throw new Error('Failed to delete webhook');
+                
+                showNotification('Webhook deleted successfully!', 'success');
+                loadWebhooks();
+                
+            } catch (error) {
+                console.error('Error deleting webhook:', error);
+                showNotification('Failed to delete webhook', 'error');
+            }
+        }
+    );
+}
+
 

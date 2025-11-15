@@ -132,9 +132,36 @@
                 </div>
             </section>
 
-            <!-- Webhooks Section (placeholder for now) -->
+            <!-- Webhooks Section -->
             <section id="webhooks-section" class="section">
-                <h2>Webhooks</h2>
+                <div class="products-header">
+                    <h2>Webhooks</h2>
+                    <div class="products-actions">
+                        <button id="create-webhook-btn" class="btn btn-primary">Create Webhook</button>
+                    </div>
+                </div>
+
+                <!-- Webhooks Table -->
+                <div class="table-container">
+                    <table id="webhooks-table" class="products-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>URL</th>
+                                <th>Event Types</th>
+                                <th>Enabled</th>
+                                <th>Timeout</th>
+                                <th>Retries</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="webhooks-tbody">
+                            <tr>
+                                <td colspan="7" class="loading">Loading webhooks...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </section>
         </main>
     </div>
@@ -189,6 +216,63 @@
                 <button type="button" id="cancel-confirm-btn" class="btn btn-secondary">Cancel</button>
                 <button type="button" id="confirm-action-btn" class="btn btn-danger">Confirm</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Webhook Modal (Create/Edit) -->
+    <div id="webhook-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="webhook-modal-title">Create Webhook</h3>
+                <button id="close-webhook-modal-btn" class="close-modal-btn">×</button>
+            </div>
+            <form id="webhook-form" class="product-form">
+                <div class="form-group">
+                    <label for="webhook-url">URL *</label>
+                    <input type="text" id="webhook-url" name="url" required placeholder="https://example.com/webhook">
+                    <span class="error-message" id="url-error"></span>
+                </div>
+                <div class="form-group">
+                    <label>Event Types *</label>
+                    <div class="checkbox-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="event_types" value="product.created">
+                            <span>Product Created</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="event_types" value="product.updated">
+                            <span>Product Updated</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="event_types" value="product.deleted">
+                            <span>Product Deleted</span>
+                        </label>
+                    </div>
+                    <span class="error-message" id="event-types-error"></span>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="webhook-enabled" name="enabled" checked>
+                        <span>Enabled</span>
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label for="webhook-secret">Secret (Optional)</label>
+                    <input type="text" id="webhook-secret" name="secret" placeholder="HMAC secret for webhook signature">
+                </div>
+                <div class="form-group">
+                    <label for="webhook-timeout">Timeout (seconds)</label>
+                    <input type="number" id="webhook-timeout" name="timeout" value="30" min="1" max="300">
+                </div>
+                <div class="form-group">
+                    <label for="webhook-retry-count">Retry Count</label>
+                    <input type="number" id="webhook-retry-count" name="retry_count" value="3" min="0" max="10">
+                </div>
+                <div class="form-actions">
+                    <button type="button" id="cancel-webhook-btn" class="btn btn-secondary">Cancel</button>
+                    <button type="submit" id="save-webhook-btn" class="btn btn-primary">Save</button>
+                </div>
+            </form>
         </div>
     </div>
 
