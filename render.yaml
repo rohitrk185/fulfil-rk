@@ -45,8 +45,10 @@ services:
       - key: ENVIRONMENT
         value: production
 
-databases:
-  - name: fulfil-rk-db
-    databaseName: fulfil_db
-    user: fulfil_user
+# Database is created manually to avoid payment requirement
+# See DEPLOYMENT.md for instructions
+# databases:
+#   - name: fulfil-rk-db
+#     databaseName: fulfil_db
+#     user: fulfil_user
 
