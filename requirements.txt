@@ -17,3 +17,6 @@ python-dotenv
 # File Upload
 python-multipart
 
+# Templates (for frontend)
+jinja2
+

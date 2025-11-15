@@ -48,3 +48,5 @@ celerybeat.pid
 
 !README.md
 *.md
+
+*.csv
