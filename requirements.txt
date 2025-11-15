@@ -20,3 +20,6 @@ python-multipart
 # Templates (for frontend)
 jinja2
 
+# HTTP Requests (for webhooks)
+requests
+

@@ -4,6 +4,7 @@ from sqlalchemy import func
 from typing import Optional, List
 from app.database import get_db
 from app.models.product import Product
+from app.utils.webhook_trigger import trigger_webhooks
 from pydantic import BaseModel, Field
 from datetime import datetime
 
@@ -136,6 +137,18 @@ async def create_product(
     db.commit()
     db.refresh(product)
     
+    # Trigger webhooks for product.created event
+    product_payload = {
+        'id': product.id,
+        'sku': product.sku,
+        'name': product.name,
+        'description': product.description,
+        'active': product.active,
+        'created_at': product.created_at.isoformat(),
+        'updated_at': product.updated_at.isoformat()
+    }
+    trigger_webhooks(db, 'product.created', product_payload)
+    
     return ProductResponse.model_validate(product)
 
 
@@ -199,6 +212,18 @@ async def update_product(
     db.commit()
     db.refresh(product)
     
+    # Trigger webhooks for product.updated event
+    product_payload = {
+        'id': product.id,
+        'sku': product.sku,
+        'name': product.name,
+        'description': product.description,
+        'active': product.active,
+        'created_at': product.created_at.isoformat(),
+        'updated_at': product.updated_at.isoformat()
+    }
+    trigger_webhooks(db, 'product.updated', product_payload)
+    
     return ProductResponse.model_validate(product)
 
 
@@ -217,8 +242,22 @@ async def delete_product(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
+    # Store product data before deletion for webhook
+    product_payload = {
+        'id': product.id,
+        'sku': product.sku,
+        'name': product.name,
+        'description': product.description,
+        'active': product.active,
+        'created_at': product.created_at.isoformat(),
+        'updated_at': product.updated_at.isoformat()
+    }
+    
     db.delete(product)
     db.commit()
+    
+    # Trigger webhooks for product.deleted event
+    trigger_webhooks(db, 'product.deleted', product_payload)
     
     return None
 

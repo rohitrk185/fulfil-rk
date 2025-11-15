@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
-from app.api import upload, products
+from app.api import upload, products, webhooks
 
 app = FastAPI(title="Fulfil-RK Product Management System")
 
@@ -24,6 +24,7 @@ templates = Jinja2Templates(directory="templates")
 # Include routers
 app.include_router(upload.router)
 app.include_router(products.router)
+app.include_router(webhooks.router)
 
 
 @app.get("/")

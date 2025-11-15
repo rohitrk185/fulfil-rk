@@ -77,7 +77,7 @@ celery_app = Celery(
     "fulfil_rk",
     broker=broker_url,
     backend=backend_url,
-    include=["app.tasks.csv_processor"]
+    include=["app.tasks.csv_processor", "app.tasks.webhook_sender"]
 )
 
 # Celery configuration
