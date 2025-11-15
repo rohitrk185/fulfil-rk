@@ -15,7 +15,7 @@ class UploadJob(Base):
     __tablename__ = "upload_jobs"
 
     id = Column(Integer, primary_key=True, index=True)
-    task_id = Column(String, unique=True, nullable=False, index=True)  # Celery task ID
+    task_id = Column(String, unique=True, nullable=True, index=True)  # Celery task ID
     status = Column(Enum(UploadStatus), default=UploadStatus.PENDING, nullable=False, index=True)
     progress = Column(Float, default=0.0, nullable=False)  # Progress percentage (0-100)
     error_message = Column(String, nullable=True)
