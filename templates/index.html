@@ -63,9 +63,73 @@
                 </div>
             </section>
 
-            <!-- Products Section (placeholder for now) -->
+            <!-- Products Section -->
             <section id="products-section" class="section">
-                <h2>Products</h2>
+                <div class="products-header">
+                    <h2>Products</h2>
+                    <div class="products-actions">
+                        <button id="create-product-btn" class="btn btn-primary">Create Product</button>
+                        <button id="bulk-delete-btn" class="btn btn-danger">Bulk Delete</button>
+                    </div>
+                </div>
+
+                <!-- Filters -->
+                <div class="filters-container">
+                    <div class="filter-group">
+                        <label for="filter-sku">SKU:</label>
+                        <input type="text" id="filter-sku" class="filter-input" placeholder="Filter by SKU">
+                    </div>
+                    <div class="filter-group">
+                        <label for="filter-name">Name:</label>
+                        <input type="text" id="filter-name" class="filter-input" placeholder="Filter by name">
+                    </div>
+                    <div class="filter-group">
+                        <label for="filter-description">Description:</label>
+                        <input type="text" id="filter-description" class="filter-input" placeholder="Filter by description">
+                    </div>
+                    <div class="filter-group">
+                        <label for="filter-active">Active:</label>
+                        <select id="filter-active" class="filter-select">
+                            <option value="">All</option>
+                            <option value="true">Active</option>
+                            <option value="false">Inactive</option>
+                        </select>
+                    </div>
+                    <button id="clear-filters-btn" class="btn btn-secondary">Clear Filters</button>
+                </div>
+
+                <!-- Products Table -->
+                <div class="table-container">
+                    <table id="products-table" class="products-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>SKU</th>
+                                <th>Name</th>
+                                <th>Description</th>
+                                <th>Active</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="products-tbody">
+                            <tr>
+                                <td colspan="6" class="loading">Loading products...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination -->
+                <div class="pagination-container">
+                    <div class="pagination-info">
+                        <span id="pagination-info">Showing 0 - 0 of 0 products</span>
+                    </div>
+                    <div class="pagination-controls">
+                        <button id="prev-page-btn" class="btn btn-secondary" disabled>Previous</button>
+                        <span id="page-numbers" class="page-numbers"></span>
+                        <button id="next-page-btn" class="btn btn-secondary" disabled>Next</button>
+                    </div>
+                </div>
             </section>
 
             <!-- Webhooks Section (placeholder for now) -->
@@ -73,6 +137,59 @@
                 <h2>Webhooks</h2>
             </section>
         </main>
+    </div>
+
+    <!-- Product Modal (Create/Edit) -->
+    <div id="product-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Create Product</h3>
+                <button id="close-modal-btn" class="close-modal-btn">×</button>
+            </div>
+            <form id="product-form" class="product-form">
+                <div class="form-group">
+                    <label for="product-sku">SKU *</label>
+                    <input type="text" id="product-sku" name="sku" required>
+                    <span class="error-message" id="sku-error"></span>
+                </div>
+                <div class="form-group">
+                    <label for="product-name">Name *</label>
+                    <input type="text" id="product-name" name="name" required>
+                    <span class="error-message" id="name-error"></span>
+                </div>
+                <div class="form-group">
+                    <label for="product-description">Description</label>
+                    <textarea id="product-description" name="description" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="product-active" name="active" checked>
+                        <span>Active</span>
+                    </label>
+                </div>
+                <div class="form-actions">
+                    <button type="button" id="cancel-product-btn" class="btn btn-secondary">Cancel</button>
+                    <button type="submit" id="save-product-btn" class="btn btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div id="confirm-modal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3 id="confirm-title">Confirm Action</h3>
+                <button id="close-confirm-btn" class="close-modal-btn">×</button>
+            </div>
+            <div class="modal-body">
+                <p id="confirm-message"></p>
+            </div>
+            <div class="form-actions">
+                <button type="button" id="cancel-confirm-btn" class="btn btn-secondary">Cancel</button>
+                <button type="button" id="confirm-action-btn" class="btn btn-danger">Confirm</button>
+            </div>
+        </div>
     </div>
 
     <script src="/static/js/app.js"></script>

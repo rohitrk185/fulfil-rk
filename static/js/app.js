@@ -387,7 +387,359 @@ document.querySelectorAll('.nav-link').forEach(link => {
         const section = document.getElementById(`${target}-section`);
         if (section) {
             section.classList.add('active');
+            // Load products when products section is shown
+            if (target === 'products') {
+                loadProducts();
+            }
         }
     });
 });
+
+// ==================== PRODUCT MANAGEMENT ====================
+
+// Product state
+let currentPage = 1;
+let pageSize = 20;
+let totalPages = 1;
+let currentFilters = {};
+let editingProductId = null;
+let filterTimeout = null;
+
+// DOM Elements for Products
+const productsTbody = document.getElementById('products-tbody');
+const createProductBtn = document.getElementById('create-product-btn');
+const bulkDeleteBtn = document.getElementById('bulk-delete-btn');
+const productModal = document.getElementById('product-modal');
+const productForm = document.getElementById('product-form');
+const modalTitle = document.getElementById('modal-title');
+const closeModalBtn = document.getElementById('close-modal-btn');
+const cancelProductBtn = document.getElementById('cancel-product-btn');
+const confirmModal = document.getElementById('confirm-modal');
+const confirmMessage = document.getElementById('confirm-message');
+const confirmActionBtn = document.getElementById('confirm-action-btn');
+const cancelConfirmBtn = document.getElementById('cancel-confirm-btn');
+const closeConfirmBtn = document.getElementById('close-confirm-btn');
+const prevPageBtn = document.getElementById('prev-page-btn');
+const nextPageBtn = document.getElementById('next-page-btn');
+const pageNumbers = document.getElementById('page-numbers');
+const paginationInfo = document.getElementById('pagination-info');
+const filterSku = document.getElementById('filter-sku');
+const filterName = document.getElementById('filter-name');
+const filterDescription = document.getElementById('filter-description');
+const filterActive = document.getElementById('filter-active');
+const clearFiltersBtn = document.getElementById('clear-filters-btn');
+
+// Load products from API
+async function loadProducts() {
+    try {
+        productsTbody.innerHTML = '<tr><td colspan="6" class="loading">Loading products...</td></tr>';
+        
+        const params = new URLSearchParams({
+            page: currentPage,
+            page_size: pageSize,
+            ...currentFilters
+        });
+        
+        const response = await fetch(`${API_BASE}/products?${params}`);
+        if (!response.ok) throw new Error('Failed to fetch products');
+        
+        const data = await response.json();
+        
+        // Update pagination state
+        totalPages = data.total_pages;
+        currentPage = data.page;
+        
+        // Render products
+        renderProducts(data.products);
+        updatePagination(data);
+        
+    } catch (error) {
+        console.error('Error loading products:', error);
+        productsTbody.innerHTML = `<tr><td colspan="6" class="error">Error loading products: ${error.message}</td></tr>`;
+    }
+}
+
+// Render products table
+function renderProducts(products) {
+    if (products.length === 0) {
+        productsTbody.innerHTML = '<tr><td colspan="6" class="empty">No products found</td></tr>';
+        return;
+    }
+    
+    productsTbody.innerHTML = products.map(product => `
+        <tr>
+            <td>${product.id}</td>
+            <td>${escapeHtml(product.sku)}</td>
+            <td>${escapeHtml(product.name)}</td>
+            <td>${escapeHtml(product.description || '')}</td>
+            <td><span class="badge ${product.active ? 'badge-success' : 'badge-inactive'}">${product.active ? 'Active' : 'Inactive'}</span></td>
+            <td class="actions">
+                <button class="btn-icon btn-edit" onclick="editProduct(${product.id})" title="Edit">✏️</button>
+                <button class="btn-icon btn-delete" onclick="deleteProduct(${product.id})" title="Delete">🗑️</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+// Update pagination controls
+function updatePagination(data) {
+    // Update info
+    const start = data.total === 0 ? 0 : (data.page - 1) * data.page_size + 1;
+    const end = Math.min(data.page * data.page_size, data.total);
+    paginationInfo.textContent = `Showing ${start} - ${end} of ${data.total} products`;
+    
+    // Update buttons
+    prevPageBtn.disabled = data.page <= 1;
+    nextPageBtn.disabled = data.page >= data.total_pages;
+    
+    // Update page numbers
+    const maxPages = 5;
+    let startPage = Math.max(1, data.page - Math.floor(maxPages / 2));
+    let endPage = Math.min(data.total_pages, startPage + maxPages - 1);
+    if (endPage - startPage < maxPages - 1) {
+        startPage = Math.max(1, endPage - maxPages + 1);
+    }
+    
+    pageNumbers.innerHTML = '';
+    for (let i = startPage; i <= endPage; i++) {
+        const pageBtn = document.createElement('button');
+        pageBtn.className = `page-btn ${i === data.page ? 'active' : ''}`;
+        pageBtn.textContent = i;
+        pageBtn.onclick = () => goToPage(i);
+        pageNumbers.appendChild(pageBtn);
+    }
+}
+
+// Pagination handlers
+function goToPage(page) {
+    if (page >= 1 && page <= totalPages) {
+        currentPage = page;
+        loadProducts();
+    }
+}
+
+prevPageBtn.addEventListener('click', () => goToPage(currentPage - 1));
+nextPageBtn.addEventListener('click', () => goToPage(currentPage + 1));
+
+// Filter handlers with debouncing
+function applyFilters() {
+    currentFilters = {};
+    
+    if (filterSku.value.trim()) currentFilters.sku = filterSku.value.trim();
+    if (filterName.value.trim()) currentFilters.name = filterName.value.trim();
+    if (filterDescription.value.trim()) currentFilters.description = filterDescription.value.trim();
+    if (filterActive.value) currentFilters.active = filterActive.value === 'true';
+    
+    currentPage = 1; // Reset to first page when filtering
+    loadProducts();
+}
+
+filterSku.addEventListener('input', () => {
+    clearTimeout(filterTimeout);
+    filterTimeout = setTimeout(applyFilters, 500);
+});
+
+filterName.addEventListener('input', () => {
+    clearTimeout(filterTimeout);
+    filterTimeout = setTimeout(applyFilters, 500);
+});
+
+filterDescription.addEventListener('input', () => {
+    clearTimeout(filterTimeout);
+    filterTimeout = setTimeout(applyFilters, 500);
+});
+
+filterActive.addEventListener('change', applyFilters);
+
+clearFiltersBtn.addEventListener('click', () => {
+    filterSku.value = '';
+    filterName.value = '';
+    filterDescription.value = '';
+    filterActive.value = '';
+    applyFilters();
+});
+
+// Modal handlers
+createProductBtn.addEventListener('click', () => {
+    editingProductId = null;
+    modalTitle.textContent = 'Create Product';
+    productForm.reset();
+    document.getElementById('product-active').checked = true;
+    clearFormErrors();
+    productModal.classList.remove('hidden');
+});
+
+closeModalBtn.addEventListener('click', closeProductModal);
+cancelProductBtn.addEventListener('click', closeProductModal);
+
+function closeProductModal() {
+    productModal.classList.add('hidden');
+    editingProductId = null;
+    productForm.reset();
+    clearFormErrors();
+}
+
+// Form submission
+productForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const formData = {
+        sku: document.getElementById('product-sku').value.trim(),
+        name: document.getElementById('product-name').value.trim(),
+        description: document.getElementById('product-description').value.trim(),
+        active: document.getElementById('product-active').checked
+    };
+    
+    clearFormErrors();
+    
+    try {
+        const url = editingProductId 
+            ? `${API_BASE}/products/${editingProductId}`
+            : `${API_BASE}/products`;
+        
+        const method = editingProductId ? 'PUT' : 'POST';
+        
+        const response = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(formData)
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            if (response.status === 400) {
+                showFormError('sku-error', data.detail || 'Validation error');
+            } else {
+                throw new Error(data.detail || 'Failed to save product');
+            }
+            return;
+        }
+        
+        closeProductModal();
+        loadProducts();
+        showNotification('Product saved successfully!', 'success');
+        
+    } catch (error) {
+        console.error('Error saving product:', error);
+        showFormError('sku-error', error.message);
+    }
+});
+
+// Edit product
+async function editProduct(id) {
+    try {
+        const response = await fetch(`${API_BASE}/products/${id}`);
+        if (!response.ok) throw new Error('Failed to fetch product');
+        
+        const product = await response.json();
+        
+        editingProductId = id;
+        modalTitle.textContent = 'Edit Product';
+        document.getElementById('product-sku').value = product.sku;
+        document.getElementById('product-name').value = product.name;
+        document.getElementById('product-description').value = product.description || '';
+        document.getElementById('product-active').checked = product.active;
+        clearFormErrors();
+        productModal.classList.remove('hidden');
+        
+    } catch (error) {
+        console.error('Error loading product:', error);
+        showNotification('Failed to load product', 'error');
+    }
+}
+
+// Delete product
+function deleteProduct(id) {
+    showConfirmModal(
+        'Delete Product',
+        'Are you sure you want to delete this product? This action cannot be undone.',
+        async () => {
+            try {
+                const response = await fetch(`${API_BASE}/products/${id}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) throw new Error('Failed to delete product');
+                
+                showNotification('Product deleted successfully!', 'success');
+                loadProducts();
+                
+            } catch (error) {
+                console.error('Error deleting product:', error);
+                showNotification('Failed to delete product', 'error');
+            }
+        }
+    );
+}
+
+// Bulk delete
+bulkDeleteBtn.addEventListener('click', () => {
+    showConfirmModal(
+        'Bulk Delete Products',
+        'Are you sure you want to delete ALL products? This action cannot be undone. This will delete all products regardless of filters.',
+        async () => {
+            try {
+                const response = await fetch(`${API_BASE}/products/bulk?confirm=true`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) throw new Error('Failed to delete products');
+                
+                const data = await response.json();
+                showNotification(`Successfully deleted ${data.deleted_count} product(s)!`, 'success');
+                loadProducts();
+                
+            } catch (error) {
+                console.error('Error deleting products:', error);
+                showNotification('Failed to delete products', 'error');
+            }
+        }
+    );
+});
+
+// Confirmation modal
+function showConfirmModal(title, message, onConfirm) {
+    document.getElementById('confirm-title').textContent = title;
+    confirmMessage.textContent = message;
+    confirmModal.classList.remove('hidden');
+    
+    const handleConfirm = () => {
+        confirmModal.classList.add('hidden');
+        onConfirm();
+        confirmActionBtn.removeEventListener('click', handleConfirm);
+    };
+    
+    confirmActionBtn.onclick = handleConfirm;
+}
+
+closeConfirmBtn.addEventListener('click', () => confirmModal.classList.add('hidden'));
+cancelConfirmBtn.addEventListener('click', () => confirmModal.classList.add('hidden'));
+
+// Utility functions
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function clearFormErrors() {
+    document.querySelectorAll('.error-message').forEach(el => {
+        el.textContent = '';
+        el.style.display = 'none';
+    });
+}
+
+function showFormError(fieldId, message) {
+    const errorEl = document.getElementById(fieldId);
+    if (errorEl) {
+        errorEl.textContent = message;
+        errorEl.style.display = 'block';
+    }
+}
+
+function showNotification(message, type = 'info') {
+    // Simple notification - you can enhance this with a toast library
+    alert(message);
+}
 
