@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models.webhook import Webhook
 from pydantic import BaseModel, Field, HttpUrl, validator
 from datetime import datetime
+import time
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
@@ -204,4 +205,64 @@ async def delete_webhook(
     db.commit()
     
     return None
+
+
+@router.post("/{webhook_id}/test")
+async def test_webhook(
+    webhook_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Test a webhook by sending a test event.
+    Returns the webhook delivery result with response code and time.
+    """
+    webhook = db.query(Webhook).filter(Webhook.id == webhook_id).first()
+    
+    if not webhook:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    
+    if not webhook.enabled:
+        raise HTTPException(status_code=400, detail="Webhook is disabled. Enable it before testing.")
+    
+    # Import here to avoid circular dependency
+    from app.tasks.webhook_sender import send_webhook
+    
+    # Create a test payload
+    test_payload = {
+        'id': 0,
+        'sku': 'TEST-SKU',
+        'name': 'Test Product',
+        'description': 'This is a test webhook event',
+        'active': True,
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat()
+    }
+    
+    # Send the webhook synchronously for testing (use apply() instead of delay())
+    try:
+        # Use apply() to run synchronously and get the result immediately
+        result = send_webhook.apply(
+            args=[webhook_id, 'product.created', test_payload],
+            countdown=0
+        )
+        
+        # Get the result
+        if result.successful():
+            return {
+                "success": True,
+                "message": "Webhook test sent successfully",
+                "result": result.result
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Webhook test failed",
+                "error": str(result.result) if result.result else "Unknown error"
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": "Error sending webhook test",
+            "error": str(e)
+        }
 

@@ -1,8 +1,16 @@
+import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 from app.api import upload, products, webhooks
+from app.config import settings
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG if settings.DEBUG else logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 app = FastAPI(title="Fulfil-RK Product Management System")
 

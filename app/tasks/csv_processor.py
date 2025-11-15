@@ -1,13 +1,18 @@
 import csv
 import random
 import os
+import logging
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects.postgresql import insert
+from celery.exceptions import SoftTimeLimitExceeded
 from app.config import settings
 from app.models.product import Product
 from app.models.upload_job import UploadJob, UploadStatus
 from celery_app import celery_app
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Create database engine for Celery tasks
 engine = create_engine(
@@ -18,15 +23,34 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Chunk size for processing
-# Ideal: 5,000-10,000 rows per chunk
-# - Smaller chunks: More frequent progress updates, lower memory usage, but more DB transactions
-# - Larger chunks: Fewer DB transactions, faster bulk operations, but less frequent updates
-# For 500k rows: 10,000 is optimal (50 chunks total, good balance)
-CHUNK_SIZE = 10000
+# Dynamic chunk size based on file size
+# - Small files (< 10k rows): 1,000 rows per chunk (more frequent updates)
+# - Medium files (10k-100k rows): 10,000 rows per chunk (balanced)
+# - Large files (100k+ rows): 10,000 rows per chunk (reduced from 20k for better reliability)
+def get_chunk_size(total_rows: int) -> int:
+    """
+    Determine optimal chunk size based on total number of rows.
+    
+    Args:
+        total_rows: Total number of rows in the CSV file
+    
+    Returns:
+        Optimal chunk size for processing
+    """
+    if total_rows < 10000:
+        return 1000  # Small files: more frequent updates
+    elif total_rows < 100000:
+        return 10000  # Medium files: balanced
+    else:
+        return 10000  # Large files (100k+): 10k chunks for better reliability
 
 
-@celery_app.task(bind=True, name="process_csv_upload")
+@celery_app.task(
+    bind=True, 
+    name="process_csv_upload",
+    time_limit=120 * 60,  # 2 hours hard limit
+    soft_time_limit=110 * 60  # 110 minutes soft limit
+)
 def process_csv_upload(self, file_path: str, upload_job_id: int):
     """
     Process CSV file and import products into database.
@@ -66,6 +90,9 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
             reader = csv.DictReader(f)
             total_rows = sum(1 for _ in reader)
         
+        # Determine optimal chunk size based on file size
+        chunk_size = get_chunk_size(total_rows)
+        
         # Update total_rows immediately so SSE can see it
         upload_job.total_rows = total_rows
         upload_job.progress = 5.0  # Set initial progress
@@ -77,7 +104,7 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
             state='PROCESSING', 
             meta={
                 'progress': 5, 
-                'message': f'Found {total_rows} rows to process', 
+                'message': f'Found {total_rows} rows to process (chunk size: {chunk_size:,})', 
                 'total_rows': total_rows,
                 'processed_rows': 0
             }
@@ -89,7 +116,7 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
             headers = reader.fieldnames
             
             if not headers:
-                raise ValueError("CSV file is empty or has no headers")
+                raise ValueError("CSV file is empty or has no headers. Please ensure your CSV file has a header row with columns: name, sku, description")
             
             # Normalize headers (lowercase, strip whitespace)
             headers_lower = [h.lower().strip() for h in headers]
@@ -101,7 +128,11 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
                     missing_columns.append(col)
             
             if missing_columns:
-                raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
+                raise ValueError(
+                    f"Missing required columns: {', '.join(missing_columns)}. "
+                    f"Your CSV must have columns: name, sku, description. "
+                    f"Found columns: {', '.join(headers)}"
+                )
         
         # Process CSV in chunks
         self.update_state(state='PROCESSING', meta={'progress': 10, 'message': 'Processing CSV data'})
@@ -110,17 +141,17 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
         chunk = []
         rows_added_to_chunk = 0
         last_progress_update = 0
-        # Progress update interval: Dynamic based on total_rows
-        # For small files (<1000 rows): Update every 10 rows
-        # For medium files (1k-10k rows): Update every 50 rows
-        # For large files (>10k rows): Update every 100-200 rows
-        # This ensures smooth progress without excessive DB writes
+        # Progress update interval: Dynamic based on total_rows and chunk_size
+        # Update more frequently for smaller files, less frequently for larger files
         if total_rows < 1000:
             PROGRESS_UPDATE_INTERVAL = 10
         elif total_rows < 10000:
             PROGRESS_UPDATE_INTERVAL = 50
+        elif total_rows < 100000:
+            PROGRESS_UPDATE_INTERVAL = 100
         else:
-            PROGRESS_UPDATE_INTERVAL = 100  # For 500k rows, update every 100 rows (5000 updates total)
+            # For large files (100k+), update every 1000 rows for better visibility
+            PROGRESS_UPDATE_INTERVAL = 1000
         
         with open(file_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
@@ -152,12 +183,9 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
                 chunk.append(product_data)
                 rows_added_to_chunk += 1
                 
-                # Process chunk when it reaches CHUNK_SIZE
-                if len(chunk) >= CHUNK_SIZE:
-                    _bulk_upsert_products(db, chunk)
-                    chunk = []  # Clear chunk after processing
-                    
-                    # Update progress
+                # Update progress periodically (every PROGRESS_UPDATE_INTERVAL rows)
+                # Do this BEFORE chunk processing to ensure progress is always visible
+                if rows_added_to_chunk - last_progress_update >= PROGRESS_UPDATE_INTERVAL:
                     progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
                     self.update_state(
                         state='PROCESSING',
@@ -175,28 +203,61 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
                     db.refresh(upload_job)  # Refresh to ensure changes are visible
                     last_progress_update = rows_added_to_chunk
                 
-                # Update progress periodically (every PROGRESS_UPDATE_INTERVAL rows)
-                elif rows_added_to_chunk - last_progress_update >= PROGRESS_UPDATE_INTERVAL:
-                    progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
-                    self.update_state(
-                        state='PROCESSING',
-                        meta={
-                            'progress': progress,
-                            'message': f'Processed {rows_added_to_chunk}/{total_rows} rows',
-                            'processed_rows': rows_added_to_chunk,
-                            'total_rows': total_rows
-                        }
-                    )
-                    
-                    upload_job.progress = progress
-                    upload_job.processed_rows = rows_added_to_chunk
-                    db.commit()
-                    db.refresh(upload_job)  # Refresh to ensure changes are visible
-                    last_progress_update = rows_added_to_chunk
+                # Process chunk when it reaches the determined chunk_size
+                if len(chunk) >= chunk_size:
+                    try:
+                        # Update progress BEFORE starting chunk processing
+                        progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
+                        self.update_state(
+                            state='PROCESSING',
+                            meta={
+                                'progress': progress,
+                                'message': f'Processing chunk... ({rows_added_to_chunk}/{total_rows} rows read)',
+                                'processed_rows': rows_added_to_chunk,
+                                'total_rows': total_rows
+                            }
+                        )
+                        upload_job.progress = progress
+                        upload_job.processed_rows = rows_added_to_chunk
+                        db.commit()
+                        db.refresh(upload_job)
+                        
+                        logger.info(f"Processing chunk of {len(chunk)} products (total processed: {rows_added_to_chunk})")
+                        _bulk_upsert_products(db, chunk, task_self=self, rows_processed=rows_added_to_chunk, total_rows=total_rows)
+                        chunk = []  # Clear chunk after processing
+                        logger.info(f"Chunk processed successfully. Continuing...")
+                        
+                        # Update progress after chunk processing
+                        progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
+                        self.update_state(
+                            state='PROCESSING',
+                            meta={
+                                'progress': progress,
+                                'message': f'Processed {rows_added_to_chunk}/{total_rows} rows',
+                                'processed_rows': rows_added_to_chunk,
+                                'total_rows': total_rows
+                            }
+                        )
+                        
+                        upload_job.progress = progress
+                        upload_job.processed_rows = rows_added_to_chunk
+                        db.commit()
+                        db.refresh(upload_job)  # Refresh to ensure changes are visible
+                        last_progress_update = rows_added_to_chunk
+                    except Exception as chunk_error:
+                        # Log the error but continue processing
+                        logger.error(f"Error processing chunk at row {rows_added_to_chunk}: {str(chunk_error)}", exc_info=True)
+                        # Rollback and try to continue with next chunk
+                        db.rollback()
+                        chunk = []  # Clear the problematic chunk
+                        # Don't raise - continue processing remaining rows
+                        # But update the error message
+                        upload_job.error_message = f"Error at row {rows_added_to_chunk}: {str(chunk_error)[:200]}"
+                        db.commit()
             
             # Process remaining chunk
             if chunk:
-                _bulk_upsert_products(db, chunk)
+                _bulk_upsert_products(db, chunk, task_self=self, rows_processed=rows_added_to_chunk, total_rows=total_rows)
                 # Update progress after processing final chunk
                 # If all rows are processed, set progress to 95% (before final completion)
                 if rows_added_to_chunk >= total_rows:
@@ -248,64 +309,160 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
             'total_rows': total_rows
         }
         
+    except SoftTimeLimitExceeded:
+        # Handle soft time limit gracefully - mark as failed but don't crash
+        try:
+            upload_job = db.query(UploadJob).filter(UploadJob.id == upload_job_id).first()
+            if upload_job:
+                upload_job.status = UploadStatus.FAILED
+                upload_job.error_message = "Processing exceeded time limit. The file may be too large. Please try splitting it into smaller files or contact support."
+                db.commit()
+        except Exception as db_error:
+            logger.error(f"Error updating upload job status: {str(db_error)}", exc_info=True)
+        
+        # Update task state
+        try:
+            self.update_state(
+                state='FAILURE', 
+                meta={
+                    'error': 'Processing exceeded time limit',
+                    'exc_type': 'SoftTimeLimitExceeded',
+                    'exc_message': 'The CSV file is too large and processing exceeded the time limit'
+                }
+            )
+        except Exception:
+            pass
+        
+        # Re-raise to mark task as failed
+        raise
     except Exception as e:
         # Update UploadJob with error
         try:
             upload_job = db.query(UploadJob).filter(UploadJob.id == upload_job_id).first()
             if upload_job:
                 upload_job.status = UploadStatus.FAILED
-                upload_job.error_message = str(e)
+                upload_job.error_message = str(e)[:500]  # Limit error message length
                 db.commit()
-        except:
+        except Exception as db_error:
+            # Log but don't fail on database update error
+            logger.error(f"Error updating upload job status: {str(db_error)}", exc_info=True)
+        
+        # Update task state to failed with proper error format
+        try:
+            error_message = str(e)[:500]  # Limit error message length
+            self.update_state(
+                state='FAILURE', 
+                meta={
+                    'error': error_message,
+                    'exc_type': type(e).__name__,
+                    'exc_message': error_message
+                }
+            )
+        except Exception:
+            # If update_state fails, just log it
             pass
         
-        # Update task state to failed
-        self.update_state(state='FAILURE', meta={'error': str(e)})
+        # Re-raise the exception
         raise
     finally:
         db.close()
 
 
-def _bulk_upsert_products(db, products_data):
+def _bulk_upsert_products(db, products_data, task_self=None, rows_processed=0, total_rows=0):
     """
     Bulk upsert products using PostgreSQL ON CONFLICT.
     Handles case-insensitive SKU matching by normalizing SKU to lowercase.
+    Also handles duplicates within the chunk (last occurrence wins).
+    Uses PostgreSQL's native ON CONFLICT for efficient upserts without querying first.
     """
     if not products_data:
         return
     
-    # Normalize SKUs to lowercase for case-insensitive matching
-    skus_lower = [p['sku'].lower() for p in products_data]
+    logger.debug(f"Starting bulk upsert for {len(products_data)} products...")
     
-    # Query existing products by lowercase SKU in bulk
-    existing_products = {
-        p.sku.lower(): p 
-        for p in db.query(Product).filter(func.lower(Product.sku).in_(skus_lower)).all()
-    }
-    
-    # Separate into updates and inserts
-    to_update = []
-    to_insert = []
-    
+    # First, deduplicate within the chunk (keep last occurrence of each SKU)
+    # This handles cases where the CSV has duplicate SKUs in the same chunk
+    seen_skus = {}
     for product_data in products_data:
         sku_lower = product_data['sku'].lower()
-        product_data['sku'] = sku_lower  # Normalize SKU to lowercase
+        seen_skus[sku_lower] = product_data
+    # Convert back to list (last occurrence of each SKU wins)
+    deduplicated_data = list(seen_skus.values())
+    logger.debug(f"After deduplication: {len(deduplicated_data)} products")
+    
+    # Normalize all SKUs to lowercase for case-insensitive matching
+    for product_data in deduplicated_data:
+        product_data['sku'] = product_data['sku'].lower()
+    
+    # Use PostgreSQL's ON CONFLICT for efficient bulk upsert
+    # Process in batches to avoid memory and query size issues
+    batch_size = 5000  # Process in batches of 5000
+    num_batches = (len(deduplicated_data) + batch_size - 1) // batch_size
+    
+    for i in range(0, len(deduplicated_data), batch_size):
+        batch = deduplicated_data[i:i + batch_size]
+        batch_num = i // batch_size + 1
+        logger.debug(f"Upserting batch {batch_num}/{num_batches} ({len(batch)} products)...")
         
-        if sku_lower in existing_products:
-            # Update existing
-            existing = existing_products[sku_lower]
-            existing.name = product_data['name']
-            existing.description = product_data['description']
-            existing.active = product_data['active']
-            to_update.append(existing)
-        else:
-            # Insert new
-            product = Product(**product_data)
-            to_insert.append(product)
+        # Update progress during upsert if task_self is provided
+        if task_self and total_rows > 0:
+            progress = min(90, 10 + (rows_processed / total_rows * 80))
+            task_self.update_state(
+                state='PROCESSING',
+                meta={
+                    'progress': progress,
+                    'message': f'Upserting products... ({rows_processed}/{total_rows} rows processed)',
+                    'processed_rows': rows_processed,
+                    'total_rows': total_rows
+                }
+            )
+        
+        try:
+            # Use PostgreSQL's INSERT ... ON CONFLICT DO UPDATE
+            # The unique constraint is on lower(sku) via the 'idx_sku_lower' index
+            # For functional indexes, we need to specify the expression
+            stmt = insert(Product).values(batch)
+            
+            # On conflict, update the existing row
+            # Use the functional index expression: lower(sku)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[func.lower(Product.sku)],
+                set_=dict(
+                    name=stmt.excluded.name,
+                    description=stmt.excluded.description,
+                    active=stmt.excluded.active,
+                    updated_at=func.now()
+                )
+            )
+            
+            db.execute(stmt)
+            db.commit()
+            logger.debug(f"Successfully upserted batch {batch_num}")
+            
+        except Exception as e:
+            db.rollback()
+            # If bulk upsert fails, fall back to individual upserts for this batch
+            logger.warning(f"Bulk upsert failed for batch {batch_num}, falling back to individual upserts: {str(e)[:200]}", exc_info=True)
+            
+            for product_data in batch:
+                try:
+                    # Use ON CONFLICT for individual upserts
+                    stmt = insert(Product).values(product_data)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=[func.lower(Product.sku)],
+                        set_=dict(
+                            name=stmt.excluded.name,
+                            description=stmt.excluded.description,
+                            active=stmt.excluded.active,
+                            updated_at=func.now()
+                        )
+                    )
+                    db.execute(stmt)
+                    db.commit()
+                except Exception as individual_error:
+                    # Skip duplicates that still occur
+                    db.rollback()
+                    logger.warning(f"Skipping product with SKU: {product_data.get('sku', 'unknown')} - {str(individual_error)[:100]}")
+                    continue
     
-    # Bulk add new products
-    if to_insert:
-        db.bulk_save_objects(to_insert)
-    
-    # Updates are already tracked by SQLAlchemy session
-    db.commit()
+    logger.debug("Bulk upsert completed successfully")

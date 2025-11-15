@@ -122,7 +122,7 @@ async def create_product(
     if existing_product:
         raise HTTPException(
             status_code=400,
-            detail=f"Product with SKU '{product_data.sku}' already exists"
+            detail=f"Product with SKU '{product_data.sku}' already exists. SKUs must be unique (case-insensitive)."
         )
     
     # Create new product
@@ -195,7 +195,7 @@ async def update_product(
         if existing_product:
             raise HTTPException(
                 status_code=400,
-                detail=f"Product with SKU '{product_data.sku}' already exists"
+                detail=f"Product with SKU '{product_data.sku}' already exists. SKUs must be unique (case-insensitive)."
             )
         product.sku = product_data.sku.lower()  # Store in lowercase
     

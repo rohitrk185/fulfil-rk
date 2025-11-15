@@ -742,9 +742,50 @@ function showFormError(fieldId, message) {
     }
 }
 
+// Notification system
+let notificationTimeout = null;
+
 function showNotification(message, type = 'info') {
-    // Simple notification - you can enhance this with a toast library
-    alert(message);
+    // Remove existing notification if any
+    const existing = document.getElementById('notification');
+    if (existing) {
+        existing.remove();
+    }
+    
+    // Create notification element
+    const notification = document.createElement('div');
+    notification.id = 'notification';
+    notification.className = `notification notification-${type}`;
+    notification.textContent = message;
+    
+    // Add to page
+    document.body.appendChild(notification);
+    
+    // Show notification
+    setTimeout(() => {
+        notification.classList.add('show');
+    }, 10);
+    
+    // Auto-hide after 5 seconds
+    clearTimeout(notificationTimeout);
+    notificationTimeout = setTimeout(() => {
+        notification.classList.remove('show');
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.remove();
+            }
+        }, 300);
+    }, 5000);
+    
+    // Click to dismiss
+    notification.addEventListener('click', () => {
+        notification.classList.remove('show');
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.remove();
+            }
+        }, 300);
+    });
 }
 
 // ==================== WEBHOOK MANAGEMENT ====================
@@ -802,6 +843,7 @@ function renderWebhooks(webhooks) {
             <td>${webhook.timeout}s</td>
             <td>${webhook.retry_count}</td>
             <td class="actions">
+                <button class="btn-icon btn-test" onclick="testWebhook(${webhook.id})" title="Test Webhook">🧪</button>
                 <button class="btn-icon btn-edit" onclick="editWebhook(${webhook.id})" title="Edit">✏️</button>
                 <button class="btn-icon btn-delete" onclick="deleteWebhook(${webhook.id})" title="Delete">🗑️</button>
             </td>
@@ -923,6 +965,37 @@ async function editWebhook(id) {
     } catch (error) {
         console.error('Error loading webhook:', error);
         showNotification('Failed to load webhook', 'error');
+    }
+}
+
+// Test webhook
+async function testWebhook(webhookId) {
+    try {
+        // Show loading state
+        showNotification('Testing webhook...', 'info');
+        
+        const response = await fetch(`${API_BASE}/webhooks/${webhookId}/test`, {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            const resultData = result.result || {};
+            const responseCode = resultData.response_code || 'N/A';
+            const responseTime = resultData.response_time ? `${resultData.response_time}s` : 'N/A';
+            const status = resultData.status || 'unknown';
+            
+            showNotification(
+                `Webhook test successful! Status: ${status}, Response: ${responseCode}, Time: ${responseTime}`,
+                'success'
+            );
+        } else {
+            const errorMsg = result.error || result.message || 'Unknown error';
+            showNotification(`Webhook test failed: ${errorMsg}`, 'error');
+        }
+    } catch (error) {
+        showNotification('Error testing webhook: ' + error.message, 'error');
     }
 }
 

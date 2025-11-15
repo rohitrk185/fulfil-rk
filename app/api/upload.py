@@ -32,16 +32,43 @@ async def upload_file(
     """
     # Validate file type
     if not file.filename:
-        raise HTTPException(status_code=400, detail="No file provided")
+        raise HTTPException(
+            status_code=400, 
+            detail="No file provided. Please select a CSV file to upload."
+        )
     
     if not file.filename.endswith('.csv'):
-        raise HTTPException(status_code=400, detail="File must be a CSV file")
+        raise HTTPException(
+            status_code=400, 
+            detail="File must be a CSV file. Please upload a file with .csv extension."
+        )
     
-    # Check content type
-    if file.content_type and 'csv' not in file.content_type.lower():
-        raise HTTPException(status_code=400, detail="File must be a CSV file")
+    # Check content type (optional check, filename is primary)
+    if file.content_type and 'csv' not in file.content_type.lower() and 'text' not in file.content_type.lower():
+        raise HTTPException(
+            status_code=400, 
+            detail="File must be a CSV file. Please upload a file with .csv extension."
+        )
     
     try:
+        # Read file content first to validate
+        content = await file.read()
+        
+        # Validate file is not empty
+        if len(content) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="File is empty. Please upload a CSV file with data."
+            )
+        
+        # Validate file size (max 100MB)
+        MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"File size ({len(content) / (1024*1024):.2f}MB) exceeds 100MB limit. Please upload a smaller file."
+            )
+        
         # Generate unique filename
         file_id = str(uuid.uuid4())
         file_extension = os.path.splitext(file.filename)[1]
@@ -50,7 +77,6 @@ async def upload_file(
         
         # Save file
         with open(file_path, "wb") as buffer:
-            content = await file.read()
             buffer.write(content)
         
         # Create UploadJob record
@@ -104,27 +130,51 @@ async def get_upload_progress(
     if not upload_job:
         raise HTTPException(status_code=404, detail="Upload job not found")
     
-    # Get task state and metadata
-    task_state = task_result.state
-    task_info = task_result.info if task_result.info else {}
+    # Try to get task state, but handle errors gracefully
+    task_state = "UNKNOWN"
+    task_info = {}
     
-    # Combine information from both sources
+    try:
+        task_state = task_result.state
+        # Safely get task info - handle cases where info might be malformed
+        try:
+            info = task_result.info if task_result.info else {}
+            # Handle different types of info objects
+            if isinstance(info, dict):
+                task_info = info
+            elif isinstance(info, str):
+                task_info = {"message": info, "error": info}
+            else:
+                # If info is not a dict or string (e.g., Retry object), use empty dict
+                # This can happen when Celery is retrying a task
+                task_info = {}
+        except Exception:
+            # If we can't parse task info, use empty dict
+            task_info = {}
+    except Exception as e:
+        # If we can't get task state, use database status
+        # This handles cases where Celery backend has issues
+        task_state = upload_job.status.value.upper()
+        task_info = {}
+    
+    # Combine information from both sources - prioritize database state
     response = {
         "task_id": task_id,
         "upload_job_id": upload_job.id,
         "status": upload_job.status.value,
-        "progress": upload_job.progress,
+        "progress": upload_job.progress or 0,
         "total_rows": upload_job.total_rows,
-        "processed_rows": upload_job.processed_rows,
+        "processed_rows": upload_job.processed_rows or 0,
         "task_state": task_state,
         "message": task_info.get("message", ""),
     }
     
     # Add error if failed
     if upload_job.status == UploadStatus.FAILED:
-        response["error"] = upload_job.error_message
+        response["error"] = upload_job.error_message or "Upload failed"
     elif task_state == "FAILURE":
-        response["error"] = str(task_info.get("error", "Unknown error"))
+        error_msg = task_info.get("error") or task_info.get("message") or "Unknown error"
+        response["error"] = str(error_msg) if error_msg else "Task failed"
     
     return response
 
@@ -146,11 +196,7 @@ async def stream_upload_progress(task_id: str):
             # Create a new database session for each check to ensure fresh data
             db = SessionLocal()
             try:
-                # Get task result
-                task_result = AsyncResult(task_id, app=celery_app)
-                
-                # Get UploadJob record (query fresh from database)
-                # Use merge to ensure we get the latest data from the database
+                # Get UploadJob record first (more reliable)
                 upload_job = db.query(UploadJob).filter(UploadJob.task_id == task_id).first()
                 
                 if not upload_job:
@@ -161,9 +207,31 @@ async def stream_upload_progress(task_id: str):
                 db.expire(upload_job)
                 db.refresh(upload_job)
                 
-                # Get task state and metadata
-                task_state = task_result.state
-                task_info = task_result.info if task_result.info else {}
+                # Try to get task state, but handle errors gracefully
+                task_state = "UNKNOWN"
+                task_info = {}
+                
+                try:
+                    task_result = AsyncResult(task_id, app=celery_app)
+                    task_state = task_result.state
+                    # Safely get task info - handle different types
+                    try:
+                        info = task_result.info if task_result.info else {}
+                        # Handle different types of info objects
+                        if isinstance(info, dict):
+                            task_info = info
+                        elif isinstance(info, str):
+                            task_info = {"message": info, "error": info}
+                        else:
+                            # If info is not a dict or string (e.g., Retry object), use empty dict
+                            # This can happen when Celery is retrying a task
+                            task_info = {}
+                    except Exception:
+                        task_info = {}
+                except Exception:
+                    # If we can't get task state, use database status
+                    task_state = upload_job.status.value.upper()
+                    task_info = {}
                 
                 # Prepare progress data
                 # Use task_info as fallback if database values are not yet set

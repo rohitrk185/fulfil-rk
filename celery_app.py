@@ -88,8 +88,8 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    task_time_limit=30 * 60,  # 30 minutes
-    task_soft_time_limit=25 * 60,  # 25 minutes
+    task_time_limit=120 * 60,  # 2 hours hard limit for large CSV files (500k+ rows)
+    task_soft_time_limit=110 * 60,  # 110 minutes soft limit
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
     broker_transport_options=broker_transport_options,
