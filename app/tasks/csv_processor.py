@@ -1,6 +1,6 @@
 import csv
 import random
-import os
+import io
 import logging
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
@@ -51,13 +51,14 @@ def get_chunk_size(total_rows: int) -> int:
     time_limit=120 * 60,  # 2 hours hard limit
     soft_time_limit=110 * 60  # 110 minutes soft limit
 )
-def process_csv_upload(self, file_path: str, upload_job_id: int):
+def process_csv_upload(self, file_content: bytes, upload_job_id: int, filename: str = "upload.csv"):
     """
     Process CSV file and import products into database.
     
     Args:
-        file_path: Path to the uploaded CSV file
+        file_content: Content of the uploaded CSV file as bytes
         upload_job_id: ID of the UploadJob record tracking this upload
+        filename: Original filename (for logging purposes)
     
     Returns:
         dict: Result with status and message
@@ -77,18 +78,24 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
         db.commit()
         db.refresh(upload_job)  # Refresh to ensure changes are visible
         
-        # Check if file exists
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"CSV file not found: {file_path}")
+        # Convert file content (bytes) to text
+        # Try UTF-8 first, fallback to latin-1 if needed
+        try:
+            file_text = file_content.decode('utf-8')
+        except UnicodeDecodeError:
+            logger.warning(f"UTF-8 decode failed for {filename}, trying latin-1")
+            file_text = file_content.decode('latin-1')
+        
+        # Create StringIO object to read CSV from memory
+        csv_file = io.StringIO(file_text)
         
         # Read and validate CSV
         self.update_state(state='PROCESSING', meta={'progress': 5, 'message': 'Reading CSV file'})
         
         # Count total rows first
-        total_rows = 0
-        with open(file_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            total_rows = sum(1 for _ in reader)
+        csv_file.seek(0)  # Reset to beginning
+        reader = csv.DictReader(csv_file)
+        total_rows = sum(1 for _ in reader)
         
         # Determine optimal chunk size based on file size
         chunk_size = get_chunk_size(total_rows)
@@ -111,28 +118,28 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
         )
         
         # Validate required columns
-        with open(file_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            headers = reader.fieldnames
-            
-            if not headers:
-                raise ValueError("CSV file is empty or has no headers. Please ensure your CSV file has a header row with columns: name, sku, description")
-            
-            # Normalize headers (lowercase, strip whitespace)
-            headers_lower = [h.lower().strip() for h in headers]
-            required_columns = ['name', 'sku', 'description']
-            
-            missing_columns = []
-            for col in required_columns:
-                if col not in headers_lower:
-                    missing_columns.append(col)
-            
-            if missing_columns:
-                raise ValueError(
-                    f"Missing required columns: {', '.join(missing_columns)}. "
-                    f"Your CSV must have columns: name, sku, description. "
-                    f"Found columns: {', '.join(headers)}"
-                )
+        csv_file.seek(0)  # Reset to beginning
+        reader = csv.DictReader(csv_file)
+        headers = reader.fieldnames
+        
+        if not headers:
+            raise ValueError("CSV file is empty or has no headers. Please ensure your CSV file has a header row with columns: name, sku, description")
+        
+        # Normalize headers (lowercase, strip whitespace)
+        headers_lower = [h.lower().strip() for h in headers]
+        required_columns = ['name', 'sku', 'description']
+        
+        missing_columns = []
+        for col in required_columns:
+            if col not in headers_lower:
+                missing_columns.append(col)
+        
+        if missing_columns:
+            raise ValueError(
+                f"Missing required columns: {', '.join(missing_columns)}. "
+                f"Your CSV must have columns: name, sku, description. "
+                f"Found columns: {', '.join(headers)}"
+            )
         
         # Process CSV in chunks
         self.update_state(state='PROCESSING', meta={'progress': 10, 'message': 'Processing CSV data'})
@@ -153,39 +160,82 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
             # For large files (100k+), update every 1000 rows for better visibility
             PROGRESS_UPDATE_INTERVAL = 1000
         
-        with open(file_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
+        # Reset to beginning and process CSV
+        csv_file.seek(0)
+        reader = csv.DictReader(csv_file)
+        
+        for row in reader:
+            # Normalize column names (case-insensitive)
+            normalized_row = {k.lower().strip(): v for k, v in row.items()}
             
-            for row in reader:
-                # Normalize column names (case-insensitive)
-                normalized_row = {k.lower().strip(): v for k, v in row.items()}
+            # Extract values
+            sku = normalized_row.get('sku', '').strip()
+            name = normalized_row.get('name', '').strip()
+            description = normalized_row.get('description', '').strip()
+            
+            # Skip rows with missing required fields
+            if not sku or not name:
+                continue
+            
+            # Randomly assign active status
+            active = random.choice([True, False])
+            
+            # Prepare product data
+            product_data = {
+                'sku': sku,
+                'name': name,
+                'description': description if description else None,
+                'active': active
+            }
+            
+            chunk.append(product_data)
+            rows_added_to_chunk += 1
+            
+            # Update progress periodically (every PROGRESS_UPDATE_INTERVAL rows)
+            # Do this BEFORE chunk processing to ensure progress is always visible
+            if rows_added_to_chunk - last_progress_update >= PROGRESS_UPDATE_INTERVAL:
+                progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
+                self.update_state(
+                    state='PROCESSING',
+                    meta={
+                        'progress': progress,
+                        'message': f'Processed {rows_added_to_chunk}/{total_rows} rows',
+                        'processed_rows': rows_added_to_chunk,
+                        'total_rows': total_rows
+                    }
+                )
                 
-                # Extract values
-                sku = normalized_row.get('sku', '').strip()
-                name = normalized_row.get('name', '').strip()
-                description = normalized_row.get('description', '').strip()
-                
-                # Skip rows with missing required fields
-                if not sku or not name:
-                    continue
-                
-                # Randomly assign active status
-                active = random.choice([True, False])
-                
-                # Prepare product data
-                product_data = {
-                    'sku': sku,
-                    'name': name,
-                    'description': description if description else None,
-                    'active': active
-                }
-                
-                chunk.append(product_data)
-                rows_added_to_chunk += 1
-                
-                # Update progress periodically (every PROGRESS_UPDATE_INTERVAL rows)
-                # Do this BEFORE chunk processing to ensure progress is always visible
-                if rows_added_to_chunk - last_progress_update >= PROGRESS_UPDATE_INTERVAL:
+                upload_job.progress = progress
+                upload_job.processed_rows = rows_added_to_chunk
+                db.commit()
+                db.refresh(upload_job)  # Refresh to ensure changes are visible
+                last_progress_update = rows_added_to_chunk
+            
+            # Process chunk when it reaches the determined chunk_size
+            if len(chunk) >= chunk_size:
+                try:
+                    # Update progress BEFORE starting chunk processing
+                    progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
+                    self.update_state(
+                        state='PROCESSING',
+                        meta={
+                            'progress': progress,
+                            'message': f'Processing chunk... ({rows_added_to_chunk}/{total_rows} rows read)',
+                            'processed_rows': rows_added_to_chunk,
+                            'total_rows': total_rows
+                        }
+                    )
+                    upload_job.progress = progress
+                    upload_job.processed_rows = rows_added_to_chunk
+                    db.commit()
+                    db.refresh(upload_job)
+                    
+                    logger.info(f"Processing chunk of {len(chunk)} products (total processed: {rows_added_to_chunk})")
+                    _bulk_upsert_products(db, chunk, task_self=self, rows_processed=rows_added_to_chunk, total_rows=total_rows)
+                    chunk = []  # Clear chunk after processing
+                    logger.info(f"Chunk processed successfully. Continuing...")
+                    
+                    # Update progress after chunk processing
                     progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
                     self.update_state(
                         state='PROCESSING',
@@ -202,83 +252,41 @@ def process_csv_upload(self, file_path: str, upload_job_id: int):
                     db.commit()
                     db.refresh(upload_job)  # Refresh to ensure changes are visible
                     last_progress_update = rows_added_to_chunk
-                
-                # Process chunk when it reaches the determined chunk_size
-                if len(chunk) >= chunk_size:
-                    try:
-                        # Update progress BEFORE starting chunk processing
-                        progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
-                        self.update_state(
-                            state='PROCESSING',
-                            meta={
-                                'progress': progress,
-                                'message': f'Processing chunk... ({rows_added_to_chunk}/{total_rows} rows read)',
-                                'processed_rows': rows_added_to_chunk,
-                                'total_rows': total_rows
-                            }
-                        )
-                        upload_job.progress = progress
-                        upload_job.processed_rows = rows_added_to_chunk
-                        db.commit()
-                        db.refresh(upload_job)
-                        
-                        logger.info(f"Processing chunk of {len(chunk)} products (total processed: {rows_added_to_chunk})")
-                        _bulk_upsert_products(db, chunk, task_self=self, rows_processed=rows_added_to_chunk, total_rows=total_rows)
-                        chunk = []  # Clear chunk after processing
-                        logger.info(f"Chunk processed successfully. Continuing...")
-                        
-                        # Update progress after chunk processing
-                        progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
-                        self.update_state(
-                            state='PROCESSING',
-                            meta={
-                                'progress': progress,
-                                'message': f'Processed {rows_added_to_chunk}/{total_rows} rows',
-                                'processed_rows': rows_added_to_chunk,
-                                'total_rows': total_rows
-                            }
-                        )
-                        
-                        upload_job.progress = progress
-                        upload_job.processed_rows = rows_added_to_chunk
-                        db.commit()
-                        db.refresh(upload_job)  # Refresh to ensure changes are visible
-                        last_progress_update = rows_added_to_chunk
-                    except Exception as chunk_error:
-                        # Log the error but continue processing
-                        logger.error(f"Error processing chunk at row {rows_added_to_chunk}: {str(chunk_error)}", exc_info=True)
-                        # Rollback and try to continue with next chunk
-                        db.rollback()
-                        chunk = []  # Clear the problematic chunk
-                        # Don't raise - continue processing remaining rows
-                        # But update the error message
-                        upload_job.error_message = f"Error at row {rows_added_to_chunk}: {str(chunk_error)[:200]}"
-                        db.commit()
+                except Exception as chunk_error:
+                    # Log the error but continue processing
+                    logger.error(f"Error processing chunk at row {rows_added_to_chunk}: {str(chunk_error)}", exc_info=True)
+                    # Rollback and try to continue with next chunk
+                    db.rollback()
+                    chunk = []  # Clear the problematic chunk
+                    # Don't raise - continue processing remaining rows
+                    # But update the error message
+                    upload_job.error_message = f"Error at row {rows_added_to_chunk}: {str(chunk_error)[:200]}"
+                    db.commit()
+        
+        # Process remaining chunk
+        if chunk:
+            _bulk_upsert_products(db, chunk, task_self=self, rows_processed=rows_added_to_chunk, total_rows=total_rows)
+            # Update progress after processing final chunk
+            # If all rows are processed, set progress to 95% (before final completion)
+            if rows_added_to_chunk >= total_rows:
+                progress = 95.0  # Almost done, finalizing
+            else:
+                progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
             
-            # Process remaining chunk
-            if chunk:
-                _bulk_upsert_products(db, chunk, task_self=self, rows_processed=rows_added_to_chunk, total_rows=total_rows)
-                # Update progress after processing final chunk
-                # If all rows are processed, set progress to 95% (before final completion)
-                if rows_added_to_chunk >= total_rows:
-                    progress = 95.0  # Almost done, finalizing
-                else:
-                    progress = min(90, 10 + (rows_added_to_chunk / total_rows * 80))
-                
-                self.update_state(
-                    state='PROCESSING',
-                    meta={
-                        'progress': progress,
-                        'message': f'Processed {rows_added_to_chunk}/{total_rows} rows',
-                        'processed_rows': rows_added_to_chunk,
-                        'total_rows': total_rows
-                    }
-                )
-                
-                upload_job.progress = progress
-                upload_job.processed_rows = rows_added_to_chunk
-                db.commit()
-                db.refresh(upload_job)  # Refresh to ensure changes are visible
+            self.update_state(
+                state='PROCESSING',
+                meta={
+                    'progress': progress,
+                    'message': f'Processed {rows_added_to_chunk}/{total_rows} rows',
+                    'processed_rows': rows_added_to_chunk,
+                    'total_rows': total_rows
+                }
+            )
+            
+            upload_job.progress = progress
+            upload_job.processed_rows = rows_added_to_chunk
+            db.commit()
+            db.refresh(upload_job)  # Refresh to ensure changes are visible
         
         # Use rows_added_to_chunk as the source of truth for processed_rows
         # This ensures we count exactly the number of rows we processed

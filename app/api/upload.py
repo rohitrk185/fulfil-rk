@@ -1,5 +1,3 @@
-import os
-import uuid
 import json
 import asyncio
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
@@ -13,10 +11,6 @@ from celery.result import AsyncResult
 from celery_app import celery_app
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
-
-# Directory to store uploaded files
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 @router.post("")
@@ -69,16 +63,6 @@ async def upload_file(
                 detail=f"File size ({len(content) / (1024*1024):.2f}MB) exceeds 100MB limit. Please upload a smaller file."
             )
         
-        # Generate unique filename
-        file_id = str(uuid.uuid4())
-        file_extension = os.path.splitext(file.filename)[1]
-        saved_filename = f"{file_id}{file_extension}"
-        file_path = os.path.join(UPLOAD_DIR, saved_filename)
-        
-        # Save file
-        with open(file_path, "wb") as buffer:
-            buffer.write(content)
-        
         # Create UploadJob record
         upload_job = UploadJob(
             task_id="",  # Will be updated after task is created
@@ -88,8 +72,9 @@ async def upload_file(
         db.commit()
         db.refresh(upload_job)
         
-        # Trigger Celery task
-        task = process_csv_upload.delay(file_path, upload_job.id)
+        # Trigger Celery task with file content (bytes) instead of file path
+        # This allows the worker on Cloud Run to process files uploaded to Render
+        task = process_csv_upload.delay(content, upload_job.id, file.filename)
         
         # Update UploadJob with task_id
         upload_job.task_id = task.id
@@ -104,10 +89,6 @@ async def upload_file(
         }
         
     except Exception as e:
-        # Clean up file if it was created
-        if 'file_path' in locals() and os.path.exists(file_path):
-            os.remove(file_path)
-        
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
 
 
