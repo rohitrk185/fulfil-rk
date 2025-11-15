@@ -41,10 +41,7 @@ services:
       - key: CELERY_RESULT_BACKEND
         sync: false
       - key: SECRET_KEY
-        fromService:
-          type: web
-          name: fulfil-rk-api
-          property: envVars.SECRET_KEY
+        generateValue: true
       - key: DEBUG
         value: "False"
       - key: ENVIRONMENT
