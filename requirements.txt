@@ -1,0 +1,19 @@
+# Web Framework
+fastapi
+uvicorn
+
+# Database
+sqlalchemy
+psycopg2-binary
+alembic
+
+# Task Queue
+celery
+redis
+
+# Environment & Configuration
+python-dotenv
+
+# File Upload
+python-multipart
+
