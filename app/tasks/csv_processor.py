@@ -1,6 +1,7 @@
 import csv
 import random
 import io
+import base64
 import logging
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
@@ -51,12 +52,12 @@ def get_chunk_size(total_rows: int) -> int:
     time_limit=120 * 60,  # 2 hours hard limit
     soft_time_limit=110 * 60  # 110 minutes soft limit
 )
-def process_csv_upload(self, file_content: bytes, upload_job_id: int, filename: str = "upload.csv"):
+def process_csv_upload(self, file_content_base64: str, upload_job_id: int, filename: str = "upload.csv"):
     """
     Process CSV file and import products into database.
     
     Args:
-        file_content: Content of the uploaded CSV file as bytes
+        file_content_base64: Base64-encoded content of the uploaded CSV file (as string)
         upload_job_id: ID of the UploadJob record tracking this upload
         filename: Original filename (for logging purposes)
     
@@ -77,6 +78,12 @@ def process_csv_upload(self, file_content: bytes, upload_job_id: int, filename: 
         upload_job.progress = 0.0
         db.commit()
         db.refresh(upload_job)  # Refresh to ensure changes are visible
+        
+        # Decode base64-encoded file content back to bytes
+        try:
+            file_content = base64.b64decode(file_content_base64.encode('utf-8'))
+        except Exception as e:
+            raise ValueError(f"Failed to decode base64 file content: {str(e)}")
         
         # Convert file content (bytes) to text
         # Try UTF-8 first, fallback to latin-1 if needed

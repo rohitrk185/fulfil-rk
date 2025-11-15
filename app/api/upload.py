@@ -1,5 +1,6 @@
 import json
 import asyncio
+import base64
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -72,9 +73,13 @@ async def upload_file(
         db.commit()
         db.refresh(upload_job)
         
-        # Trigger Celery task with file content (bytes) instead of file path
-        # This allows the worker on Cloud Run to process files uploaded to Render
-        task = process_csv_upload.delay(content, upload_job.id, file.filename)
+        # Encode file content to base64 for JSON serialization
+        # Celery uses JSON serialization which cannot handle raw bytes
+        file_content_base64 = base64.b64encode(content).decode('utf-8')
+        
+        # Trigger Celery task with base64-encoded file content instead of file path
+        # This allows the worker on Render to process files uploaded to Render
+        task = process_csv_upload.delay(file_content_base64, upload_job.id, file.filename)
         
         # Update UploadJob with task_id
         upload_job.task_id = task.id
