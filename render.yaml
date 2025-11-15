@@ -3,7 +3,6 @@ services:
   - type: web
     name: fulfil-rk-api
     env: python
-    plan: starter
     buildCommand: pip install -r requirements.txt && alembic upgrade head
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -28,7 +27,6 @@ services:
   - type: worker
     name: fulfil-rk-worker
     env: python
-    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A celery_app worker --loglevel=info
     envVars:
@@ -49,7 +47,6 @@ services:
 
 databases:
   - name: fulfil-rk-db
-    plan: starter
     databaseName: fulfil_db
     user: fulfil_user
 
